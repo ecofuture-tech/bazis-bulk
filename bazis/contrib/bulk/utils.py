@@ -26,11 +26,13 @@ synchronous calls of the sub-requests to that thread instead of the shared pool.
 import asyncio
 import dataclasses
 import functools
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
 
 from django.db import close_old_connections, connections, transaction
 
+import anyio
 import anyio.to_thread
 from asgiref.sync import sync_to_async
 
@@ -40,6 +42,7 @@ class _DedicatedThread:
     executor: ThreadPoolExecutor
     #: the event loop of the bulk request
     loop: asyncio.AbstractEventLoop
+    thread_ident: int | None = None
     active: bool = True
 
 
@@ -60,10 +63,13 @@ def _run_sync_wrapper(run_sync):
             return await run_sync(func, *args, **kwargs)
 
         if asyncio.get_running_loop() is not dedicated.loop:
-            # the code of the dedicated thread started an event loop of its own with
-            # async_to_sync (e.g. RouteBase.raw_call): the dedicated thread is blocked
-            # waiting for it, so a call queued to its executor would never run. asgiref
-            # runs thread-sensitive calls in the thread that called async_to_sync.
+            # the code of the dedicated thread started an event loop of its own: the
+            # dedicated thread waits for it, so a call queued to its executor would never run
+            if threading.get_ident() == dedicated.thread_ident:
+                # the loop runs in the dedicated thread itself (asyncio.run)
+                return func(*args)
+            # async_to_sync (e.g. RouteBase.raw_call) runs the loop in another thread;
+            # asgiref runs thread-sensitive calls in the thread that called async_to_sync
             return await sync_to_async(func, thread_sensitive=True)(*args)
 
         context = copy_context()
@@ -134,6 +140,7 @@ class ThreadDedicated(ThreadsPool):
         )
 
     def _transaction_start(self):
+        self.dedicated.thread_ident = threading.get_ident()
         close_old_connections()
         self.atomic.__enter__()
 
@@ -175,17 +182,22 @@ class ThreadDedicated(ThreadsPool):
         self.dedicated.active = False
 
         # the transaction must be finished even if the request is cancelled: the end is
-        # queued after the running sub-request (if it was abandoned) and awaited until done
+        # queued after the running sub-request (if it was abandoned) and awaited until done,
+        # shielded from the cancel scopes of anyio (which repeat the cancellation) and from
+        # a plain cancellation of the task (asyncio.shield keeps the end in the queue)
         end: Future = self.dedicated.executor.submit(
             self._transaction_end, exc_type, exc_value, traceback
         )
         self.dedicated.executor.shutdown(wait=False)
-        cancelled = False
-        while not end.done():
+        waiter = asyncio.wrap_future(end)
+        cancelled: asyncio.CancelledError | None = None
+        while not waiter.done():
             try:
-                await asyncio.shield(asyncio.wrap_future(end))
-            except asyncio.CancelledError:
-                cancelled = True
-        if cancelled:
-            raise asyncio.CancelledError
-        end.result()
+                with anyio.CancelScope(shield=True):
+                    await asyncio.shield(waiter)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+        if cancelled is not None:
+            # the original exception, so that the cancel scope that sent it recognizes it
+            raise cancelled
+        waiter.result()
