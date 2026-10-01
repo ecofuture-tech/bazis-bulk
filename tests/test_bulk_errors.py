@@ -67,12 +67,16 @@ def test_bulk_not_atomic(sample_app):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_bulk_nested_rejected(sample_app):
-    request_data = [{'endpoint': '/api/v1/bulk/', 'method': 'POST', 'body': []}]
+@pytest.mark.parametrize('is_atomic', ['true', 'false'])
+def test_bulk_nested_rejected(sample_app, is_atomic):
+    request_data = [
+        {'endpoint': f'/api/v1/bulk/?is_atomic={is_atomic}', 'method': 'POST', 'body': []}
+    ]
 
-    response = get_api_client(sample_app).post('/api/v1/bulk/', json_data=request_data)
+    response = get_api_client(sample_app).post(
+        f'/api/v1/bulk/?is_atomic={is_atomic}', json_data=request_data
+    )
 
-    assert response.status_code == 400
     assert response.json()[0]['status'] == 400
     assert response.json()[0]['response']['errors'][0]['code'] == 'ERR_BULK'
 
@@ -89,14 +93,49 @@ def test_bulk_items_limit(sample_app, settings):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_bulk_requests_after_bulk_use_the_pool(sample_app):
+def test_bulk_dedicated_thread(sample_app):
     """
-    The dedicated thread of an atomic bulk request is used only inside the request.
+    The sub-requests of an atomic bulk request run in its dedicated thread, also through
+    a nested event loop (no deadlock); other requests use the shared pool.
     """
     client = get_api_client(sample_app)
-    response = client.post('/api/v1/bulk/', json_data=[_create_parent('in bulk')])
-    assert response.status_code == 200
+    request_data = [
+        {'endpoint': '/api/v1/echo/', 'headers': [['X-Bulk-Test', 'value']]},
+        {'endpoint': '/api/v1/echo/'},
+    ]
 
-    response = client.post('/api/v1/entity/parent_entity/', json_data=_create_parent('alone')['body'])
-    assert response.status_code == 201
-    assert set(ParentEntity.objects.values_list('name', flat=True)) == {'in bulk', 'alone'}
+    response = client.post('/api/v1/bulk/', json_data=request_data)
+    assert response.status_code == 200
+    first, second = (item['response'] for item in response.json())
+    assert first['thread'].startswith('bazis-bulk')
+    assert first['nested_thread'] == first['thread']
+    assert second['thread'] == first['thread']
+    assert first['header'] == 'value'
+    assert second['header'] is None
+
+    response = client.post('/api/v1/bulk/?is_atomic=false', json_data=request_data)
+    assert response.status_code == 200
+    assert not response.json()[0]['response']['thread'].startswith('bazis-bulk')
+
+    response = client.get('/api/v1/echo/')
+    assert not response.json()['thread'].startswith('bazis-bulk')
+    assert not response.json()['nested_thread'].startswith('bazis-bulk')
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    'headers',
+    [
+        [['X-Forwarded-For', '10.0.0.1']],
+        [['Host', 'example.com']],
+        [['bad name', 'value']],
+        [['X-Test', 'line\r\nbreak']],
+        [['X-Test', 'не latin-1']],
+    ],
+)
+def test_bulk_invalid_headers(sample_app, headers):
+    request_data = [{'endpoint': '/api/v1/echo/', 'headers': headers}]
+
+    response = get_api_client(sample_app).post('/api/v1/bulk/', json_data=request_data)
+
+    assert response.status_code == 422

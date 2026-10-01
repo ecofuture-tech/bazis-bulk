@@ -15,7 +15,7 @@
 import asyncio
 import json
 import logging
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from django.conf import settings
 from django.utils.translation import gettext_lazy as _
@@ -26,7 +26,13 @@ from bazis.core.errors import JsonApiBazisError, JsonApiBazisException
 from bazis.core.routing import BazisRouter
 
 from . import schemas
-from .utils import ThreadDedicated, ThreadsPool, in_bulk_request
+from .utils import (
+    ThreadDedicated,
+    ThreadsPool,
+    in_bulk_request,
+    reset_in_bulk_request,
+    set_in_bulk_request,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -58,7 +64,7 @@ def _sub_request_scope(request: Request, item: schemas.BulkRequestItemSchema, bo
     }
     headers[b'content-type'] = b'application/vnd.api+json'
     for name, value in item.headers or ():
-        headers[name.lower().encode('latin-1')] = str(value).encode('latin-1')
+        headers[name.encode('latin-1')] = value.encode('latin-1')
     headers[b'content-length'] = str(len(body)).encode()
 
     scope = {key: request.scope[key] for key in SCOPE_KEYS if key in request.scope}
@@ -67,7 +73,7 @@ def _sub_request_scope(request: Request, item: schemas.BulkRequestItemSchema, bo
     scope.update(
         {
             'method': item.method,
-            'path': url.path,
+            'path': unquote(url.path),
             'raw_path': url.path.encode(),
             'query_string': url.query.encode(),
             'headers': list(headers.items()),
@@ -140,6 +146,7 @@ async def bulk(
     results = []
     response.status_code = 200
     thread_behavior = ThreadDedicated() if is_atomic else ThreadsPool()
+    in_bulk_token = set_in_bulk_request()
 
     try:
         async with thread_behavior as thread:
@@ -162,5 +169,7 @@ async def bulk(
                 raise BulkRollbackError
     except BulkRollbackError:
         pass
+    finally:
+        reset_in_bulk_request(in_bulk_token)
 
     return results
