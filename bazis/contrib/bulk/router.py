@@ -15,7 +15,3 @@
 from bazis.core.app import app  # noqa: F401
 
 from .routes import router  # noqa: F401
-from .utils import install_run_sync_dispatch
-
-
-install_run_sync_dispatch()

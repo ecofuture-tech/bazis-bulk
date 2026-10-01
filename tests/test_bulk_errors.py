@@ -139,3 +139,23 @@ def test_bulk_invalid_headers(sample_app, headers):
     response = get_api_client(sample_app).post('/api/v1/bulk/', json_data=request_data)
 
     assert response.status_code == 422
+
+
+def test_sub_request_failing_after_the_response_started():
+    """
+    A sub-request that fails after its response started (e.g. a streaming body) was
+    reported with the status already sent, so an atomic bulk request committed.
+    """
+    import asyncio
+
+    from bazis.contrib.bulk.routes import _run_sub_request
+
+    async def app(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'{"data": [', 'more_body': True})
+        raise RuntimeError('the stream failed')
+
+    result = {}
+    asyncio.run(_run_sub_request(app, {'method': 'GET', 'path': '/x/'}, b'', result))
+    assert result['status'] == 500
+    assert result['response'] is None
