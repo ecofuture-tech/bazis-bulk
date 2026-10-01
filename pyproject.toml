@@ -33,12 +33,13 @@ classifiers = [
     "Framework :: FastAPI",
 ]
 dependencies = [
-    "bazis",
+    "bazis>=2.3.0",
+    "anyio>=4.0",
 ]
 
 [project.optional-dependencies]
 test = [
-    "bazis-test-utils"
+    "bazis-test-utils>=2.3.0"
 ]
 dev = [
     "ruff"
