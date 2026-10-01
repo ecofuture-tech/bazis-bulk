@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
+
+from fastapi import Request
+
+from starlette.concurrency import run_in_threadpool
+
+from asgiref.sync import async_to_sync
+
 from bazis.core.routing import BazisRouter
 
 from . import routes
@@ -22,3 +30,28 @@ router.register(routes.ChildEntityRouteSet.as_router())
 router.register(routes.DependentEntityRouteSet.as_router())
 router.register(routes.ExtendedEntityRouteSet.as_router())
 router.register(routes.ParentEntityRouteSet.as_router())
+
+
+@router.get('/failing/')
+def failing_route():
+    """
+    A route that fails with an unhandled exception, used by the tests of bulk requests.
+    """
+    raise RuntimeError('failing route')
+
+
+def _thread_name() -> str:
+    return threading.current_thread().name
+
+
+@router.get('/echo/')
+def echo_route(request: Request):
+    """
+    Returns the thread running the route, the thread of a call made through a nested
+    event loop (as RouteBase.raw_call does) and a test header, for the tests of bulk requests.
+    """
+    return {
+        'thread': _thread_name(),
+        'nested_thread': async_to_sync(run_in_threadpool)(_thread_name),
+        'header': request.headers.get('x-bulk-test'),
+    }
