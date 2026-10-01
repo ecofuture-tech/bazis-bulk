@@ -95,21 +95,27 @@ async def _run_sub_request(app, scope: dict, body: bytes, result: dict):
         await asyncio.Event().wait()
 
     body_parts = []
+    response_complete = False
 
     async def send(message):
+        nonlocal response_complete
         if message['type'] == 'http.response.start':
             result['status'] = message['status']
             result['headers'] = message.get('headers', [])
         elif message['type'] == 'http.response.body':
             body_parts.append(message.get('body', b''))
+            response_complete = not message.get('more_body', False)
 
     try:
         await app(scope, receive, send)
     except Exception:
         # the error middleware has already sent the 500 response if it could
         logger.exception('Bulk: the sub-request %s %s failed', scope['method'], scope['path'])
-        result.setdefault('status', 500)
-        result.setdefault('headers', [])
+        if not response_complete:
+            # no response, or the response had started and is incomplete
+            result['status'] = 500
+            result['headers'] = []
+            body_parts.clear()
 
     response_body = b''.join(body_parts)
     content_type = dict(result['headers']).get(b'content-type', b'')

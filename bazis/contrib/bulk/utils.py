@@ -30,7 +30,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
 
-from django.db import close_old_connections, connections, transaction
+from django.db import connections, transaction
 
 import anyio
 import anyio.to_thread
@@ -141,7 +141,6 @@ class ThreadDedicated(ThreadsPool):
 
     def _transaction_start(self):
         self.dedicated.thread_ident = threading.get_ident()
-        close_old_connections()
         self.atomic.__enter__()
 
     def _transaction_end(self, exc_type, exc_value, traceback):
