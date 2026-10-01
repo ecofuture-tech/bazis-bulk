@@ -159,3 +159,23 @@ def test_sub_request_failing_after_the_response_started():
     asyncio.run(_run_sub_request(app, {'method': 'GET', 'path': '/x/'}, b'', result))
     assert result['status'] == 500
     assert result['response'] is None
+
+
+def test_sub_request_failing_after_the_response_completed():
+    """
+    An error after a complete response (e.g. in a background task) keeps the response.
+    """
+    import asyncio
+
+    from bazis.contrib.bulk.routes import _run_sub_request
+
+    async def app(scope, receive, send):
+        headers = [(b'content-type', b'application/json')]
+        await send({'type': 'http.response.start', 'status': 200, 'headers': headers})
+        await send({'type': 'http.response.body', 'body': b'{"ok": true}'})
+        raise RuntimeError('the background task failed')
+
+    result = {}
+    asyncio.run(_run_sub_request(app, {'method': 'GET', 'path': '/x/'}, b'', result))
+    assert result['status'] == 200
+    assert result['response'] == {'ok': True}
