@@ -12,20 +12,75 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
+import re
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+
+HEADER_NAME_RE = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+
+#: headers a request item cannot set: they describe the connection or are set by the
+#: reverse proxy, which applications may trust (client address, host, scheme)
+FORBIDDEN_HEADERS = frozenset(
+    {
+        'host',
+        'content-length',
+        'transfer-encoding',
+        'connection',
+        'keep-alive',
+        'upgrade',
+        'expect',
+        'te',
+        'trailer',
+        'forwarded',
+        'x-forwarded-for',
+        'x-forwarded-host',
+        'x-forwarded-proto',
+        'x-forwarded-port',
+        'x-forwarded-prefix',
+        'x-real-ip',
+    }
+)
 
 
 class BulkRequestItemSchema(BaseModel):
     endpoint: str
-    method: str = 'GET'
-    body: dict | None = None
+    method: Literal['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] = 'GET'
+    body: dict | list | None = None
+    #: headers added to (or replacing) the headers of the bulk request
     headers: list[tuple[str, Any]] | None = None
+
+    @field_validator('method', mode='before')
+    @classmethod
+    def method_upper(cls, value):
+        return value.upper() if isinstance(value, str) else value
+
+    @field_validator('headers')
+    @classmethod
+    def headers_check(cls, value):
+        if value is None:
+            return value
+        headers = []
+        for name, header_value in value:
+            name = str(name).lower()
+            header_value = str(header_value)
+            if not HEADER_NAME_RE.fullmatch(name):
+                raise ValueError(f'invalid header name: {name!r}')
+            if name in FORBIDDEN_HEADERS:
+                raise ValueError(f'the header {name!r} cannot be set')
+            if any(ch in header_value for ch in '\r\n\0'):
+                raise ValueError(f'invalid value of the header {name!r}')
+            try:
+                header_value.encode('latin-1')
+            except UnicodeEncodeError:
+                raise ValueError(f'the value of the header {name!r} must be latin-1') from None
+            headers.append((name, header_value))
+        return headers
 
 
 class BulkResponseItemSchema(BaseModel):
     endpoint: str
     status: int
-    response: str | dict | None
+    response: str | dict | list | None
     headers: list[tuple[str, Any]]
