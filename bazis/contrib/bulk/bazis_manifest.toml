@@ -1,0 +1,45 @@
+# What the package is for and how to use it, for tools and AI agents (see AGENTS.md).
+# `import` paths and `check` ids are verified by tests/test_manifest.py.
+
+[package]
+name = "bazis-bulk"
+summary = "several API requests in one HTTP request, optionally in one transaction"
+solves = [
+    "create or change several related objects in one call",
+    "all-or-nothing changes of several resources (one database transaction)",
+    "fewer round trips from the client",
+]
+requires = ["bazis"]
+pairs_well = ["bazis-permit"]
+
+[[extension_points]]
+name = "router"
+import = "bazis.contrib.bulk.routes.router"
+use_when = "register the endpoint: router.register('bazis.contrib.bulk.router')"
+
+[[extension_points]]
+name = "BulkRequestItemSchema"
+import = "bazis.contrib.bulk.schemas.BulkRequestItemSchema"
+use_when = "the format of an item of a bulk request (endpoint, method, body, headers)"
+
+[[extension_points]]
+name = "BulkResponseItemSchema"
+import = "bazis.contrib.bulk.schemas.BulkResponseItemSchema"
+use_when = "the format of an item of a bulk response (endpoint, status, headers, response)"
+
+[[extension_points]]
+name = "in_bulk_request"
+import = "bazis.contrib.bulk.utils.in_bulk_request"
+use_when = "code that must know whether it runs inside a bulk request"
+
+[[pitfalls]]
+text = "with is_atomic=true (default) one failed item rolls back all items, but the following items still run and the response lists them with their own statuses"
+
+[[pitfalls]]
+text = "only synchronous code run through anyio.to_thread.run_sync (FastAPI endpoints and dependencies) joins the transaction of an atomic bulk request"
+
+[[pitfalls]]
+text = "at most BAZIS_BULK_MAX_ITEMS items (default 1000) and no nested bulk requests: 400 ERR_BULK"
+
+[[pitfalls]]
+text = "if BS_BAZIS_APPS is set it must list bazis.contrib.bulk, or BAZIS_BULK_MAX_ITEMS is not loaded"
