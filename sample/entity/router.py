@@ -22,3 +22,11 @@ router.register(routes.ChildEntityRouteSet.as_router())
 router.register(routes.DependentEntityRouteSet.as_router())
 router.register(routes.ExtendedEntityRouteSet.as_router())
 router.register(routes.ParentEntityRouteSet.as_router())
+
+
+@router.get('/failing/')
+def failing_route():
+    """
+    A route that fails with an unhandled exception, used by the tests of bulk requests.
+    """
+    raise RuntimeError('failing route')

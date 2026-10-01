@@ -130,11 +130,19 @@ A bulk request is an array of objects, where each object describes a separate HT
 ```typescript
 {
   "endpoint": string,    // Endpoint path (required)
-  "method": string,      // HTTP method: GET, POST, PATCH, PUT, DELETE (required)
+  "method": string,      // GET (default), POST, PUT, PATCH, DELETE, HEAD or OPTIONS
   "body": object,        // Request body in JSON:API format (optional)
-  "headers": array       // Additional headers (optional, currently ignored)
+  "headers": array       // [name, value] pairs added to the headers of the bulk request (optional)
 }
 ```
+
+Every request receives the headers of the bulk request (e.g. `Authorization`), except
+`Content-Length`, `Content-Type`, `Transfer-Encoding` and `Expect`, plus its own `headers`.
+
+A bulk request can contain at most `BAZIS_BULK_MAX_ITEMS` requests (1000 by default) and
+cannot contain bulk requests; otherwise it fails with 400 and the error code `ERR_BULK`.
+A request that fails with an unhandled exception gets the status 500 and does not stop
+the following ones.
 
 **Example**:
 
@@ -198,11 +206,14 @@ Each response item contains the original endpoint, HTTP status, headers, and the
 }
 ```
 
-Headers are returned as emitted by the ASGI app (typically byte pairs).
+Headers are returned as emitted by the ASGI app. A non-JSON body is returned as text.
 
 ### Transactional Mode
 
 In transactional mode, all operations execute in a dedicated thread with a single database transaction.
+While the bulk request runs, the synchronous code of its operations (endpoints and dependencies,
+which FastAPI runs through `anyio.to_thread.run_sync`) is sent to this thread; other requests
+keep using the shared thread pool.
 
 **Features**:
 

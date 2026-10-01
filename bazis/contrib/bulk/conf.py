@@ -12,10 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from bazis.core.app import app  # noqa: F401
+from django.utils.translation import gettext_lazy as _
 
-from .routes import router  # noqa: F401
-from .utils import install_run_sync_dispatch
+from pydantic import Field
+
+from bazis.core.utils.schemas import BazisSettings
 
 
-install_run_sync_dispatch()
+class Settings(BazisSettings):
+    BAZIS_BULK_MAX_ITEMS: int = Field(
+        1000, title=_('Maximum number of requests in a bulk request'), gt=0
+    )
+
+
+settings = Settings()

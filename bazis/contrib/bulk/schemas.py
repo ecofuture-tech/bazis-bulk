@@ -12,20 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class BulkRequestItemSchema(BaseModel):
     endpoint: str
-    method: str = 'GET'
-    body: dict | None = None
+    method: Literal['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] = 'GET'
+    body: dict | list | None = None
+    #: headers added to (or replacing) the headers of the bulk request
     headers: list[tuple[str, Any]] | None = None
+
+    @field_validator('method', mode='before')
+    @classmethod
+    def method_upper(cls, value):
+        return value.upper() if isinstance(value, str) else value
 
 
 class BulkResponseItemSchema(BaseModel):
     endpoint: str
     status: int
-    response: str | dict | None
+    response: str | dict | list | None
     headers: list[tuple[str, Any]]
