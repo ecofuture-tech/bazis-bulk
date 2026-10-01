@@ -24,30 +24,51 @@ synchronous calls of the sub-requests to that thread instead of the shared pool.
 """
 
 import asyncio
+import dataclasses
 import functools
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
 
 from django.db import close_old_connections, connections, transaction
 
 import anyio.to_thread
+from asgiref.sync import sync_to_async
 
 
-#: the executor of the dedicated thread of the bulk request running in the current context
-_dedicated_executor: ContextVar[ThreadPoolExecutor | None] = ContextVar(
-    'bulk_dedicated_executor', default=None
+@dataclasses.dataclass
+class _DedicatedThread:
+    executor: ThreadPoolExecutor
+    #: the event loop of the bulk request
+    loop: asyncio.AbstractEventLoop
+    active: bool = True
+
+
+#: the dedicated thread of the atomic bulk request running in the current context
+_dedicated_thread: ContextVar[_DedicatedThread | None] = ContextVar(
+    'bulk_dedicated_thread', default=None
 )
+#: set while any bulk request (atomic or not) runs in the current context
+_in_bulk: ContextVar[bool] = ContextVar('bulk_in_bulk', default=False)
 
 
 def _run_sync_wrapper(run_sync):
     @functools.wraps(run_sync)
     async def wrapper(func, *args, **kwargs):
-        executor = _dedicated_executor.get()
-        if executor is None:
+        dedicated = _dedicated_thread.get()
+        # outside of an atomic bulk request, or in a task that outlived it
+        if dedicated is None or not dedicated.active:
             return await run_sync(func, *args, **kwargs)
+
+        if asyncio.get_running_loop() is not dedicated.loop:
+            # the code of the dedicated thread started an event loop of its own with
+            # async_to_sync (e.g. RouteBase.raw_call): the dedicated thread is blocked
+            # waiting for it, so a call queued to its executor would never run. asgiref
+            # runs thread-sensitive calls in the thread that called async_to_sync.
+            return await sync_to_async(func, thread_sensitive=True)(*args)
+
         context = copy_context()
-        return await asyncio.get_running_loop().run_in_executor(
-            executor, functools.partial(context.run, func, *args)
+        return await dedicated.loop.run_in_executor(
+            dedicated.executor, functools.partial(context.run, func, *args)
         )
 
     wrapper.__bazis_bulk__ = True
@@ -65,7 +86,19 @@ def install_run_sync_dispatch():
 
 
 def in_bulk_request() -> bool:
-    return _dedicated_executor.get() is not None
+    return _in_bulk.get()
+
+
+def set_in_bulk_request():
+    """
+    Marks the current context (the bulk request and everything it calls) as a bulk request.
+    Returns the token for `reset_in_bulk_request`.
+    """
+    return _in_bulk.set(True)
+
+
+def reset_in_bulk_request(token):
+    _in_bulk.reset(token)
 
 
 class ThreadsPool:
@@ -92,11 +125,13 @@ class ThreadDedicated(ThreadsPool):
     def __init__(self, using=None):
         self.using = using
         self.atomic = transaction.atomic(using=using)
-        self.executor: ThreadPoolExecutor | None = None
-        self.executor_token = None
+        self.dedicated: _DedicatedThread | None = None
+        self.dedicated_token = None
 
     async def _run(self, func, *args):
-        return await asyncio.get_running_loop().run_in_executor(self.executor, func, *args)
+        return await asyncio.get_running_loop().run_in_executor(
+            self.dedicated.executor, func, *args
+        )
 
     def _transaction_start(self):
         close_old_connections()
@@ -121,25 +156,36 @@ class ThreadDedicated(ThreadsPool):
 
     async def __aenter__(self):
         install_run_sync_dispatch()
-        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='bazis-bulk')
+        self.dedicated = _DedicatedThread(
+            executor=ThreadPoolExecutor(max_workers=1, thread_name_prefix='bazis-bulk'),
+            loop=asyncio.get_running_loop(),
+        )
         try:
             await self._run(self._transaction_start)
         except BaseException:
-            self.executor.shutdown(wait=False)
+            self.dedicated.executor.shutdown(wait=False)
             raise
-        self.executor_token = _dedicated_executor.set(self.executor)
+        self.dedicated_token = _dedicated_thread.set(self.dedicated)
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):
-        _dedicated_executor.reset(self.executor_token)
-        # the transaction must be finished even if the request is cancelled
-        end = asyncio.ensure_future(
-            self._run(self._transaction_end, exc_type, exc_value, traceback)
+        _dedicated_thread.reset(self.dedicated_token)
+        # tasks started by the sub-requests may outlive the request: they must not use
+        # the executor any more
+        self.dedicated.active = False
+
+        # the transaction must be finished even if the request is cancelled: the end is
+        # queued after the running sub-request (if it was abandoned) and awaited until done
+        end: Future = self.dedicated.executor.submit(
+            self._transaction_end, exc_type, exc_value, traceback
         )
-        try:
-            await asyncio.shield(end)
-        except asyncio.CancelledError:
-            await end
-            raise
-        finally:
-            self.executor.shutdown(wait=False)
+        self.dedicated.executor.shutdown(wait=False)
+        cancelled = False
+        while not end.done():
+            try:
+                await asyncio.shield(asyncio.wrap_future(end))
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+        end.result()

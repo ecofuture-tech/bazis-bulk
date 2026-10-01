@@ -138,6 +138,9 @@ A bulk request is an array of objects, where each object describes a separate HT
 
 Every request receives the headers of the bulk request (e.g. `Authorization`), except
 `Content-Length`, `Content-Type`, `Transfer-Encoding` and `Expect`, plus its own `headers`.
+A request item cannot set connection headers (`Host`, `Content-Length`, `Connection`, ...)
+or the headers of the reverse proxy (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`); header
+values must be latin-1 without line breaks. Otherwise the bulk request fails with 422.
 
 A bulk request can contain at most `BAZIS_BULK_MAX_ITEMS` requests (1000 by default) and
 cannot contain bulk requests; otherwise it fails with 400 and the error code `ERR_BULK`.
