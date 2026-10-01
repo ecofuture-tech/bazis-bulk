@@ -30,8 +30,6 @@ from .utils import (
     ThreadDedicated,
     ThreadsPool,
     in_bulk_request,
-    reset_in_bulk_request,
-    set_in_bulk_request,
 )
 
 
@@ -108,8 +106,11 @@ async def _run_sub_request(app, scope: dict, body: bytes, result: dict):
     except Exception:
         # the error middleware has already sent the 500 response if it could
         logger.exception('Bulk: the sub-request %s %s failed', scope['method'], scope['path'])
-        result.setdefault('status', 500)
-        result.setdefault('headers', [])
+        if result.get('status') != 500:
+            # no response, or the response had started and is incomplete
+            result['status'] = 500
+            result['headers'] = []
+            body_parts.clear()
 
     response_body = b''.join(body_parts)
     content_type = dict(result['headers']).get(b'content-type', b'')
@@ -135,7 +136,7 @@ async def bulk(
     """
     from bazis.core.app import app
 
-    if in_bulk_request():
+    if in_bulk_request.get():
         raise _bulk_error(_('A bulk request cannot contain bulk requests'))
     if len(items) > settings.BAZIS_BULK_MAX_ITEMS:
         raise _bulk_error(
@@ -146,7 +147,7 @@ async def bulk(
     results = []
     response.status_code = 200
     thread_behavior = ThreadDedicated() if is_atomic else ThreadsPool()
-    in_bulk_token = set_in_bulk_request()
+    in_bulk_token = in_bulk_request.set(True)
 
     try:
         async with thread_behavior as thread:
@@ -170,6 +171,6 @@ async def bulk(
     except BulkRollbackError:
         pass
     finally:
-        reset_in_bulk_request(in_bulk_token)
+        in_bulk_request.reset(in_bulk_token)
 
     return results

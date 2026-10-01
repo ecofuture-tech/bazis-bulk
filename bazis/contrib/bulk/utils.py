@@ -30,7 +30,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
 
-from django.db import close_old_connections, connections, transaction
+from django.db import connections, transaction
 
 import anyio
 import anyio.to_thread
@@ -51,7 +51,7 @@ _dedicated_thread: ContextVar[_DedicatedThread | None] = ContextVar(
     'bulk_dedicated_thread', default=None
 )
 #: set while any bulk request (atomic or not) runs in the current context
-_in_bulk: ContextVar[bool] = ContextVar('bulk_in_bulk', default=False)
+in_bulk_request: ContextVar[bool] = ContextVar('bulk_in_bulk', default=False)
 
 
 def _run_sync_wrapper(run_sync):
@@ -91,22 +91,6 @@ def install_run_sync_dispatch():
         anyio.to_thread.run_sync = _run_sync_wrapper(anyio.to_thread.run_sync)
 
 
-def in_bulk_request() -> bool:
-    return _in_bulk.get()
-
-
-def set_in_bulk_request():
-    """
-    Marks the current context (the bulk request and everything it calls) as a bulk request.
-    Returns the token for `reset_in_bulk_request`.
-    """
-    return _in_bulk.set(True)
-
-
-def reset_in_bulk_request(token):
-    _in_bulk.reset(token)
-
-
 class ThreadsPool:
     """
     Standard behavior: the sub-requests run in the shared thread pool, each in its own
@@ -141,7 +125,6 @@ class ThreadDedicated(ThreadsPool):
 
     def _transaction_start(self):
         self.dedicated.thread_ident = threading.get_ident()
-        close_old_connections()
         self.atomic.__enter__()
 
     def _transaction_end(self, exc_type, exc_value, traceback):
