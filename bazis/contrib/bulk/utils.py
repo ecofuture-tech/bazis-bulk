@@ -51,7 +51,7 @@ _dedicated_thread: ContextVar[_DedicatedThread | None] = ContextVar(
     'bulk_dedicated_thread', default=None
 )
 #: set while any bulk request (atomic or not) runs in the current context
-in_bulk_request: ContextVar[bool] = ContextVar('bulk_in_bulk', default=False)
+_in_bulk: ContextVar[bool] = ContextVar('bulk_in_bulk', default=False)
 
 
 def _run_sync_wrapper(run_sync):
@@ -89,6 +89,22 @@ def install_run_sync_dispatch():
     """
     if not getattr(anyio.to_thread.run_sync, '__bazis_bulk__', False):
         anyio.to_thread.run_sync = _run_sync_wrapper(anyio.to_thread.run_sync)
+
+
+def in_bulk_request() -> bool:
+    return _in_bulk.get()
+
+
+def set_in_bulk_request():
+    """
+    Marks the current context (the bulk request and everything it calls) as a bulk request.
+    Returns the token for `reset_in_bulk_request`.
+    """
+    return _in_bulk.set(True)
+
+
+def reset_in_bulk_request(token):
+    _in_bulk.reset(token)
 
 
 class ThreadsPool:
