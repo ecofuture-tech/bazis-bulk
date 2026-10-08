@@ -470,7 +470,11 @@ def test_bulk_update_rollback(sample_app):
     assert err['code'] == 'ERR_VALIDATE'
     assert err['title'] == 'decimal_parsing'
     assert err['detail'] == 'Input should be a valid decimal'
-    assert err['source']['pointer'] == '/attributes/child_price'
+    assert err['source'] == {
+        'pointer': '/data/attributes/child_price',
+        'id': str(child_entity_1.pk),
+        'type': 'entity.child_entity',
+    }
 
     child_entity_2_response = bulk_data[2]
     assert child_entity_2_response['status'] == 201
@@ -537,7 +541,11 @@ def test_bulk_update_rollback(sample_app):
     assert err['code'] == 'ERR_VALIDATE'
     assert err['title'] == 'decimal_parsing'
     assert err['detail'] == 'Input should be a valid decimal'
-    assert err['source']['pointer'] == '/attributes/child_price'
+    assert err['source'] == {
+        'pointer': '/data/attributes/child_price',
+        'id': str(child_entity_1.pk),
+        'type': 'entity.child_entity',
+    }
 
     child_entity_2_response = bulk_data[2]
     assert child_entity_2_response['status'] == 201
