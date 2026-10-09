@@ -39,6 +39,8 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
+    # the tests check the pointers of the errors of Bazis 2.11
+    "bazis>=2.11.0",
     "bazis-test-utils>=2.3.0"
 ]
 dev = [
